@@ -6,7 +6,7 @@ use std::process::Command;
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 
-const GITHUB_API: &str = "https://api.github.com/repos/yearsyan/pck-tool/releases/latest";
+const GITHUB_API: &str = "https://api.github.com/repos/yearsyan/godot-pck-tool/releases/latest";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {

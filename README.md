@@ -6,10 +6,10 @@ Supports both plain and encrypted PCK archives (AES-256-CFB), including the embe
 
 ## Install
 
-Download a prebuilt binary from [Releases](https://github.com/yearsyan/pck-tool/releases), or build from source:
+Download a prebuilt binary from [Releases](https://github.com/yearsyan/godot-pck-tool/releases), or build from source:
 
 ```bash
-cargo install --git https://github.com/yearsyan/pck-tool
+cargo install --git https://github.com/yearsyan/godot-pck-tool
 ```
 
 ## Usage
