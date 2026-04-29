@@ -44,8 +44,6 @@ fn target_triple() -> &'static str {
         "aarch64-apple-darwin"
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-musl"
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "x86_64-pc-windows-msvc"
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
