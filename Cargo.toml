@@ -1,6 +1,6 @@
 [package]
 name = "pck-tool"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Godot .pck file inspector, extractor and decryption tool"
 repository = "https://github.com/yearsyan/godot-pck-tool"

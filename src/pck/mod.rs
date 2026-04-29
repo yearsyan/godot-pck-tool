@@ -148,10 +148,19 @@ struct EncryptedBlock {
     data: Vec<u8>,
 }
 
-fn read_encrypted_block(
-    reader: &mut BufReader<&fs::File>,
-    key: &[u8; 32],
-) -> io::Result<EncryptedBlock> {
+/// Raw encrypted block data read from the file — BEFORE decryption.
+/// Used for key-guessing: we read this once, then try multiple keys against it.
+#[derive(Debug, Clone)]
+pub struct RawEncryptedBlock {
+    pub md5_expected: [u8; 16],
+    pub data_len: u64,
+    pub iv: [u8; 16],
+    pub cipher: Vec<u8>,
+}
+
+/// Read the raw encrypted region from the current reader position.
+/// Returns the metadata and ciphertext needed for later decryption attempts.
+fn read_raw_encrypted_block(reader: &mut BufReader<&fs::File>) -> io::Result<RawEncryptedBlock> {
     let mut md5_expected = [0u8; 16];
     reader.read_exact(&mut md5_expected)?;
 
@@ -169,18 +178,75 @@ fn read_encrypted_block(
     let mut cipher = vec![0u8; cipher_len as usize];
     reader.read_exact(&mut cipher)?;
 
-    aes256_cfb_decrypt(key, &iv, &mut cipher);
-    cipher.truncate(data_len as usize);
+    Ok(RawEncryptedBlock {
+        md5_expected,
+        data_len,
+        iv,
+        cipher,
+    })
+}
 
-    let computed = md5::compute(&cipher);
-    if computed[..] != md5_expected[..] {
+/// Try to decrypt and verify a raw encrypted block with the given key.
+/// Returns the decrypted data on success, or an error.
+fn decrypt_raw_block(raw: &RawEncryptedBlock, key: &[u8; 32]) -> io::Result<Vec<u8>> {
+    let mut data = raw.cipher.clone();
+    aes256_cfb_decrypt(key, &raw.iv, &mut data);
+    data.truncate(raw.data_len as usize);
+
+    let computed = md5::compute(&data);
+    if computed[..] != raw.md5_expected[..] {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "MD5 mismatch: decryption key is likely incorrect",
         ));
     }
 
-    Ok(EncryptedBlock { data: cipher })
+    Ok(data)
+}
+
+/// Verify whether a candidate key can decrypt a raw encrypted block.
+/// Returns `true` if the key produces a valid MD5 match.
+pub fn verify_encrypted_block(raw: &RawEncryptedBlock, key: &[u8; 32]) -> bool {
+    let mut data = raw.cipher.clone();
+    aes256_cfb_decrypt(key, &raw.iv, &mut data);
+    data.truncate(raw.data_len as usize);
+    let computed = md5::compute(&data);
+    computed[..] == raw.md5_expected[..]
+}
+
+fn read_encrypted_block(
+    reader: &mut BufReader<&fs::File>,
+    key: &[u8; 32],
+) -> io::Result<EncryptedBlock> {
+    let raw = read_raw_encrypted_block(reader)?;
+    let data = decrypt_raw_block(&raw, key)?;
+    Ok(EncryptedBlock { data })
+}
+
+// ----- Encrypted directory (pre-scan) ---------------------------------------
+
+/// Raw information about an encrypted PCK directory.
+/// Read once, then used to verify candidate keys without further I/O.
+#[derive(Debug, Clone)]
+pub struct EncryptedDirRaw {
+    pub file_count: u32,
+    pub block: RawEncryptedBlock,
+}
+
+/// Read the encrypted directory raw info from the PCK file.
+/// Returns `None` if the directory is not encrypted.
+pub fn read_dir_raw(
+    reader: &mut BufReader<&fs::File>,
+    dir_offset: u64,
+    pack_flags: u32,
+) -> io::Result<Option<EncryptedDirRaw>> {
+    if pack_flags & PACK_DIR_ENCRYPTED == 0 {
+        return Ok(None);
+    }
+    reader.seek(SeekFrom::Start(dir_offset))?;
+    let file_count = read_u32_be(reader)?;
+    let block = read_raw_encrypted_block(reader)?;
+    Ok(Some(EncryptedDirRaw { file_count, block }))
 }
 
 // ----- Directory -----------------------------------------------------------

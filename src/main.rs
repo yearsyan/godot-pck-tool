@@ -1,4 +1,5 @@
 mod pck;
+mod scan;
 mod upgrade;
 
 use clap::{Parser, Subcommand};
@@ -13,13 +14,20 @@ use std::path::Path;
 #[derive(Parser)]
 #[command(name = "pck-tool", version, about = "Godot PCK file parser & extractor")]
 struct Cli {
-    /// Path to the .pck file
+    /// Path to the .pck file (or host executable with embedded PCK)
     #[arg(short, long)]
     file: Option<String>,
 
-    /// Script encryption key (64 hex chars, 32 bytes)
+    /// Script encryption key (64 hex chars, 32 bytes).
+    /// Defaults to all-zeros. Overridden by --detect-key when detection succeeds.
     #[arg(short, long, default_value = "0000000000000000000000000000000000000000000000000000000000000000")]
     key: String,
+
+    /// Path to the host executable (e.g. Demo.exe) to auto-detect the
+    /// embedded encryption key from. Scans .data/.rdata sections for
+    /// high-entropy 32-byte sequences and verifies each against the PCK.
+    #[arg(long)]
+    detect_key: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -201,12 +209,25 @@ fn main() -> io::Result<()> {
     }
 
     let file_path = cli.file.as_ref().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "--file is required for this command")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--file is required for this command",
+        )
     })?;
 
-    let key = crypto::hex_to_key(&cli.key)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // ----- Key detection (if requested) -------------------------------------
+    let key: [u8; 32] = if let Some(host_path) = &cli.detect_key {
+        detect_and_return_key(file_path, host_path)
+            .unwrap_or_else(|e| {
+                eprintln!("Key detection error: {}", e);
+                std::process::exit(1);
+            })
+    } else {
+        crypto::hex_to_key(&cli.key)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+    };
 
+    // ----- Normal operation ------------------------------------------------
     let file = match fs::File::open(file_path) {
         Ok(f) => f,
         Err(e) => {
@@ -258,6 +279,87 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Attempt to auto-detect the encryption key from a host executable.
+/// Opens the PCK to read the encrypted directory metadata, then scans the
+/// host binary for the embedded key.
+fn detect_and_return_key(file_path: &str, host_path: &str) -> io::Result<[u8; 32]> {
+    eprintln!("=== Key Detection ===");
+    eprintln!("PCK: {}", file_path);
+    eprintln!("Host: {}", host_path);
+
+    // 1. Open PCK, parse header, read raw encrypted directory info
+    let pck_file = match fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!("Cannot open PCK '{}': {}", file_path, e),
+            ));
+        }
+    };
+
+    let mut reader = BufReader::new(&pck_file);
+    let pck_start = pck::find_pck_header(&mut reader).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("PCK header not found in '{}': {}", file_path, e),
+        )
+    })?;
+    let result = pck::parse_header_full(&mut reader, pck_start)?;
+
+    let dir_raw = pck::read_dir_raw(
+        &mut reader,
+        result.header.dir_offset,
+        result.header.pack_flags,
+    )?;
+
+    let dir_raw = match dir_raw {
+        Some(d) => d,
+        None => {
+            eprintln!(
+                "PCK directory is NOT encrypted (flags=0x{:08X}). No key needed.",
+                result.header.pack_flags
+            );
+            // Use zero key — it doesn't matter since nothing is encrypted
+            return Ok([0u8; 32]);
+        }
+    };
+
+    eprintln!(
+        "Encrypted directory: {} files, block={} bytes",
+        dir_raw.file_count,
+        dir_raw.block.data_len
+    );
+
+    // 2. Scan host EXE for candidate keys
+    let progress = |tested: usize, total: usize| {
+        eprint!("\r  Testing key candidates: {}/{}...", tested, total);
+        let _ = io::stderr().flush();
+    };
+
+    let found = scan::detect_key(host_path, &dir_raw, &progress)?;
+
+    match found {
+        Some((offset, key)) => {
+            eprintln!("\n  *** KEY FOUND ***");
+            eprintln!("  File offset: 0x{:X} ({})", offset, offset);
+            eprintln!("  Key (hex):   {}", hex::encode(key));
+            eprintln!("====================");
+            Ok(key)
+        }
+        None => {
+            eprintln!("\n  Key NOT found by scanning.");
+            eprintln!("  The key may be zero, or the host file may not match this PCK.");
+            eprintln!("  Try specifying --key manually.");
+            eprintln!("====================");
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Could not detect encryption key from host executable",
+            ))
+        }
+    }
 }
 
 fn cmd_install(old_path: &str) -> io::Result<()> {
