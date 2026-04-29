@@ -129,9 +129,21 @@ pub fn upgrade() -> io::Result<()> {
         .read_to_end(&mut body)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let mut decoder = GzDecoder::new(&body[..]);
+    let decoder = GzDecoder::new(&body[..]);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = archive
+        .entries()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let mut entry = entries
+        .next()
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "empty tar archive")
+        })?
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
     let mut binary = Vec::new();
-    decoder
+    entry
         .read_to_end(&mut binary)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
