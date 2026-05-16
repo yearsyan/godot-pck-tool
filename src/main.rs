@@ -6,13 +6,17 @@ use clap::{Parser, Subcommand};
 use pck::{crypto, format_size, FileEntry};
 use std::fs;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 #[derive(Parser)]
-#[command(name = "pck-tool", version, about = "Godot PCK file parser & extractor")]
+#[command(
+    name = "pck-tool",
+    version,
+    about = "Godot PCK file parser & extractor"
+)]
 struct Cli {
     /// Path to the .pck file (or host executable with embedded PCK)
     #[arg(short, long)]
@@ -20,7 +24,11 @@ struct Cli {
 
     /// Script encryption key (64 hex chars, 32 bytes).
     /// Defaults to all-zeros. Overridden by --detect-key when detection succeeds.
-    #[arg(short, long, default_value = "0000000000000000000000000000000000000000000000000000000000000000")]
+    #[arg(
+        short,
+        long,
+        default_value = "0000000000000000000000000000000000000000000000000000000000000000"
+    )]
     key: String,
 
     /// Path to the host executable (e.g. Demo.exe) to auto-detect the
@@ -61,13 +69,17 @@ enum Commands {
         #[arg(short, long)]
         decrypt: bool,
     },
+    /// Extract embedded PCK bytes from a host executable
+    ExtractPck {
+        /// Output .pck path. Defaults to the input path with .pck extension.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// Check GitHub for latest release, download and install
     Upgrade,
     /// Replace binary at <OLD_PATH> with self (used internally by upgrade)
     #[command(hide = true)]
-    Install {
-        old_path: String,
-    },
+    Install { old_path: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -132,11 +144,7 @@ fn cmd_extract(
         let rel_path = entry.path.strip_prefix("res://").unwrap_or(&entry.path);
 
         let file_path = if flat {
-            out_path.join(
-                Path::new(rel_path)
-                    .file_name()
-                    .unwrap_or(rel_path.as_ref()),
-            )
+            out_path.join(Path::new(rel_path).file_name().unwrap_or(rel_path.as_ref()))
         } else {
             out_path.join(rel_path)
         };
@@ -192,6 +200,72 @@ fn cmd_pipe(
     Ok(())
 }
 
+fn default_pck_output_path(file_path: &str) -> PathBuf {
+    let input = Path::new(file_path);
+    let is_pck = input
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("pck"))
+        .unwrap_or(false);
+
+    if is_pck {
+        let stem = input
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("output");
+        input.with_file_name(format!("{}.extracted.pck", stem))
+    } else {
+        input.with_extension("pck")
+    }
+}
+
+fn cmd_extract_pck(file_path: &str, output: Option<&str>) -> io::Result<()> {
+    let file = fs::File::open(file_path)
+        .map_err(|e| io::Error::new(e.kind(), format!("Cannot open '{}': {}", file_path, e)))?;
+    let mut reader = BufReader::new(&file);
+    let location = pck::locate_pck(&mut reader)?;
+
+    let output_path = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_pck_output_path(file_path));
+
+    let input_abs = fs::canonicalize(file_path)?;
+    if let Ok(output_abs) = fs::canonicalize(&output_path) {
+        if output_abs == input_abs {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Output path must be different from input path",
+            ));
+        }
+    }
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let mut out = fs::File::create(&output_path)?;
+    reader.seek(SeekFrom::Start(location.start))?;
+    let copied = io::copy(&mut reader.by_ref().take(location.size), &mut out)?;
+    if copied != location.size {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("Copied {} bytes, expected {} bytes", copied, location.size),
+        ));
+    }
+
+    eprintln!(
+        "PCK source: embedded={}, offset=0x{:X}, size={}",
+        location.embedded,
+        location.start,
+        format_size(location.size),
+    );
+    println!("Extracted PCK: {}", output_path.display());
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -215,16 +289,18 @@ fn main() -> io::Result<()> {
         )
     })?;
 
+    if let Commands::ExtractPck { output } = &cli.command {
+        return cmd_extract_pck(file_path, output.as_deref());
+    }
+
     // ----- Key detection (if requested) -------------------------------------
     let key: [u8; 32] = if let Some(host_path) = &cli.detect_key {
-        detect_and_return_key(file_path, host_path)
-            .unwrap_or_else(|e| {
-                eprintln!("Key detection error: {}", e);
-                std::process::exit(1);
-            })
+        detect_and_return_key(file_path, host_path).unwrap_or_else(|e| {
+            eprintln!("Key detection error: {}", e);
+            std::process::exit(1);
+        })
     } else {
-        crypto::hex_to_key(&cli.key)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+        crypto::hex_to_key(&cli.key).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
     };
 
     // ----- Normal operation ------------------------------------------------
@@ -275,7 +351,9 @@ fn main() -> io::Result<()> {
         Commands::Pipe { path, decrypt } => {
             cmd_pipe(&mut reader, &entries, &key, path, *decrypt)?;
         }
-        Commands::Upgrade | Commands::Install { .. } => unreachable!(),
+        Commands::ExtractPck { .. } | Commands::Upgrade | Commands::Install { .. } => {
+            unreachable!()
+        }
     }
 
     Ok(())
@@ -329,8 +407,7 @@ fn detect_and_return_key(file_path: &str, host_path: &str) -> io::Result<[u8; 32
 
     eprintln!(
         "Encrypted directory: {} files, block={} bytes",
-        dir_raw.file_count,
-        dir_raw.block.data_len
+        dir_raw.file_count, dir_raw.block.data_len
     );
 
     // 2. Scan host EXE for candidate keys

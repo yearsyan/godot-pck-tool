@@ -60,6 +60,13 @@ pub struct PckParseResult {
     pub file_base: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PckLocation {
+    pub start: u64,
+    pub size: u64,
+    pub embedded: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub path: String,
@@ -76,26 +83,49 @@ pub struct FileEntry {
 
 /// Find PCK header. Tries start-of-file, then embedded trailer at end.
 pub fn find_pck_header(reader: &mut BufReader<&fs::File>) -> io::Result<i64> {
+    let location = locate_pck(reader)?;
+    i64::try_from(location.start).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "PCK header offset does not fit in i64",
+        )
+    })
+}
+
+/// Locate PCK bytes in a standalone .pck or a host executable with an embedded PCK.
+pub fn locate_pck(reader: &mut BufReader<&fs::File>) -> io::Result<PckLocation> {
+    let file_len = reader.seek(SeekFrom::End(0))?;
+
     // Standalone PCK: start of file
-    reader.seek(SeekFrom::Start(0))?;
-    let magic = read_u32_be(reader)?;
-    if magic == PACK_HEADER_MAGIC {
-        return Ok(0);
+    if file_len >= 4 {
+        reader.seek(SeekFrom::Start(0))?;
+        let magic = read_u32_be(reader)?;
+        if magic == PACK_HEADER_MAGIC {
+            return Ok(PckLocation {
+                start: 0,
+                size: file_len,
+                embedded: false,
+            });
+        }
     }
 
     // Embedded trailer: [pck_size: u64 | GDPC: u32] at end of file
-    let file_len = reader.seek(SeekFrom::End(0))?;
     if file_len >= 12 {
-        reader.seek(SeekFrom::End(-4))?;
+        reader.seek(SeekFrom::Start(file_len - 4))?;
         let magic = read_u32_be(reader)?;
         if magic == PACK_HEADER_MAGIC {
-            reader.seek(SeekFrom::End(-12))?;
+            reader.seek(SeekFrom::Start(file_len - 12))?;
             let pck_size = read_u64_be(reader)?;
-            if pck_size + 12 <= file_len {
-                reader.seek(SeekFrom::End(-((pck_size + 12) as i64)))?;
+            if pck_size >= 4 && pck_size <= file_len - 12 {
+                let pck_start = file_len - 12 - pck_size;
+                reader.seek(SeekFrom::Start(pck_start))?;
                 let magic = read_u32_be(reader)?;
                 if magic == PACK_HEADER_MAGIC {
-                    return Ok(reader.stream_position()? as i64 - 4);
+                    return Ok(PckLocation {
+                        start: pck_start,
+                        size: pck_size,
+                        embedded: true,
+                    });
                 }
             }
         }
@@ -330,6 +360,75 @@ pub fn read_file_data(
         let mut data = vec![0u8; entry.size as usize];
         reader.read_exact(&mut data)?;
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "pck_tool_{}_{}_{}.bin",
+            name,
+            std::process::id(),
+            stamp
+        ))
+    }
+
+    fn write_temp(name: &str, data: &[u8]) -> PathBuf {
+        let path = temp_path(name);
+        fs::write(&path, data).unwrap();
+        path
+    }
+
+    #[test]
+    fn locate_standalone_pck() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&PACK_HEADER_MAGIC.to_le_bytes());
+        data.extend_from_slice(&[1, 2, 3, 4]);
+        let path = write_temp("standalone", &data);
+
+        let file = fs::File::open(&path).unwrap();
+        let mut reader = BufReader::new(&file);
+        let location = locate_pck(&mut reader).unwrap();
+
+        assert_eq!(location.start, 0);
+        assert_eq!(location.size, data.len() as u64);
+        assert!(!location.embedded);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn locate_embedded_pck() {
+        let mut pck = Vec::new();
+        pck.extend_from_slice(&PACK_HEADER_MAGIC.to_le_bytes());
+        pck.extend_from_slice(&[9u8; 32]);
+
+        let mut data = b"MZ fake exe".to_vec();
+        let pck_start = data.len() as u64;
+        data.extend_from_slice(&pck);
+        data.extend_from_slice(&(pck.len() as u64).to_le_bytes());
+        data.extend_from_slice(&PACK_HEADER_MAGIC.to_le_bytes());
+
+        let path = write_temp("embedded", &data);
+        let file = fs::File::open(&path).unwrap();
+        let mut reader = BufReader::new(&file);
+
+        let location = locate_pck(&mut reader).unwrap();
+        assert_eq!(location.start, pck_start);
+        assert_eq!(location.size, pck.len() as u64);
+        assert!(location.embedded);
+        assert_eq!(find_pck_header(&mut reader).unwrap(), pck_start as i64);
+
+        fs::remove_file(path).unwrap();
     }
 }
 

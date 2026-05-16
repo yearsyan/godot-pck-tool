@@ -30,11 +30,17 @@ pck-tool --file game.pck extract --output ./out --flat
 # Output a single file to stdout (for piping)
 pck-tool --file game.pck pipe icon.svg > icon.svg
 
+# Extract an embedded PCK from a self-contained executable
+pck-tool --file Game.exe extract-pck --output Game.pck
+
 # Decrypt with a key (64 hex chars = 32 bytes)
 pck-tool --file game.pck --key <64hex> list
 pck-tool --file game.pck --key <64hex> extract --output ./out
 pck-tool --file game.pck --key <64hex> pipe icon.svg
 ```
+
+If `--output` is omitted, `extract-pck` writes next to the input using the same
+base name and a `.pck` extension.
 
 ## PCK Format
 
