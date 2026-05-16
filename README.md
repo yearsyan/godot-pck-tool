@@ -4,6 +4,8 @@ Godot `.pck` file parser, inspector, and extractor written in Rust.
 
 Supports both plain and encrypted PCK archives (AES-256-CFB), including the embedded PCK trailer found in self-contained executables.
 
+Also supports **CTEX texture reconstruction** — converting Godot's compressed `.ctex` textures back to `.png` during extraction (see `--untex` below).
+
 ## Install
 
 Download a prebuilt binary from [Releases](https://github.com/yearsyan/godot-pck-tool/releases), or build from source:
@@ -24,6 +26,9 @@ pck-tool --file game.pck list --encrypted
 # Extract all files (preserving directory structure)
 pck-tool --file game.pck extract --output ./out
 
+# Extract with CTEX texture reconstruction (.ctex → .png)
+pck-tool --file game.pck extract --output ./out --untex
+
 # Extract flat (no subdirectories)
 pck-tool --file game.pck extract --output ./out --flat
 
@@ -41,6 +46,21 @@ pck-tool --file game.pck --key <64hex> pipe icon.svg
 
 If `--output` is omitted, `extract-pck` writes next to the input using the same
 base name and a `.pck` extension.
+
+### CTEX Texture Reconstruction (`--untex` / `-u`)
+
+When `--untex` is passed to `extract`, the tool reads `.import` files in the
+output directory, locates the corresponding `.ctex` (CompressedTexture2D)
+files, and converts them back to `.png` at the original source path.
+
+| CTEX DataFormat | Supported | Notes |
+|-----------------|-----------|-------|
+| WEBP (2) | Yes | WebP blob decoded to PNG via the `image` crate |
+| PNG (1) | Yes | PNG blob copied directly |
+| RAW (0) | No | GPU-compressed format (BC7/BC3/etc.), needs GPU decompression |
+| BASIS (3) | No | Basis Universal KTX2, needs `basisu_transcoder` |
+
+Original `.import` and `.ctex` files are preserved.
 
 ## PCK Format
 

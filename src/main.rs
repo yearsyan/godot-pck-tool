@@ -1,3 +1,4 @@
+mod ctex;
 mod pck;
 mod scan;
 mod upgrade;
@@ -60,6 +61,9 @@ enum Commands {
         /// Skip directory structure, flatten output
         #[arg(short, long)]
         flat: bool,
+        /// Convert CTEX textures back to PNG (reads .import -> .ctex -> .png)
+        #[arg(short = 'u', long)]
+        untex: bool,
     },
     /// Output a single file to stdout (for piping)
     Pipe {
@@ -133,6 +137,7 @@ fn cmd_extract(
     output_dir: &str,
     only_encrypted: bool,
     flat: bool,
+    untex: bool,
 ) -> io::Result<()> {
     let out_path = Path::new(output_dir);
 
@@ -162,6 +167,11 @@ fn cmd_extract(
             file_path.display(),
             format_size(entry.size)
         );
+    }
+
+    if untex {
+        eprintln!("Converting CTEX textures back to PNG...");
+        ctex::convert_ctex_in_output(out_path);
     }
 
     Ok(())
@@ -343,9 +353,10 @@ fn main() -> io::Result<()> {
             output,
             encrypted,
             flat,
+            untex,
         } => {
             eprintln!("Extracting to: {}", output);
-            cmd_extract(&mut reader, &entries, &key, output, *encrypted, *flat)?;
+            cmd_extract(&mut reader, &entries, &key, output, *encrypted, *flat, *untex)?;
             eprintln!("Done.");
         }
         Commands::Pipe { path, decrypt } => {
