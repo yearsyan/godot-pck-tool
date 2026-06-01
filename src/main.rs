@@ -1,4 +1,5 @@
 mod ctex;
+mod pack;
 mod pck;
 mod scan;
 mod upgrade;
@@ -19,9 +20,13 @@ use std::path::{Path, PathBuf};
     about = "Godot PCK file parser & extractor"
 )]
 struct Cli {
-    /// Path to the .pck file (or host executable with embedded PCK)
+    /// Path to the .pck file (or host executable); for pack, output path
     #[arg(short, long)]
     file: Option<String>,
+
+    /// Path to a folder to pack into a PCK
+    #[arg(long)]
+    folder: Option<String>,
 
     /// Script encryption key (64 hex chars, 32 bytes).
     /// Defaults to all-zeros. Overridden by --detect-key when detection succeeds.
@@ -78,6 +83,12 @@ enum Commands {
         /// Output .pck path. Defaults to the input path with .pck extension.
         #[arg(short, long)]
         output: Option<String>,
+    },
+    /// Pack a folder into a PCK archive
+    Pack {
+        /// Encrypt directory and files with a 64-char hex AES-256 key
+        #[arg(long, value_name = "64HEX")]
+        encrypt_key: Option<String>,
     },
     /// Check GitHub for latest release, download and install
     Upgrade,
@@ -289,6 +300,32 @@ fn main() -> io::Result<()> {
         Commands::Install { old_path } => {
             return cmd_install(old_path);
         }
+        Commands::Pack { encrypt_key } => {
+            let folder = cli.folder.as_ref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--folder is required for pack")
+            })?;
+            let output = cli.file.as_ref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--file is required for pack")
+            })?;
+
+            let key = match encrypt_key {
+                Some(key) => Some(
+                    crypto::hex_to_key(key)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                ),
+                None => None,
+            };
+
+            let stats = pack::pack_folder(Path::new(folder), Path::new(output), key.as_ref())?;
+            eprintln!(
+                "Packed {} files ({}) to {}{}",
+                stats.file_count,
+                format_size(stats.total_size),
+                output,
+                if stats.encrypted { " [encrypted]" } else { "" }
+            );
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -356,13 +393,24 @@ fn main() -> io::Result<()> {
             untex,
         } => {
             eprintln!("Extracting to: {}", output);
-            cmd_extract(&mut reader, &entries, &key, output, *encrypted, *flat, *untex)?;
+            cmd_extract(
+                &mut reader,
+                &entries,
+                &key,
+                output,
+                *encrypted,
+                *flat,
+                *untex,
+            )?;
             eprintln!("Done.");
         }
         Commands::Pipe { path, decrypt } => {
             cmd_pipe(&mut reader, &entries, &key, path, *decrypt)?;
         }
-        Commands::ExtractPck { .. } | Commands::Upgrade | Commands::Install { .. } => {
+        Commands::ExtractPck { .. }
+        | Commands::Pack { .. }
+        | Commands::Upgrade
+        | Commands::Install { .. } => {
             unreachable!()
         }
     }

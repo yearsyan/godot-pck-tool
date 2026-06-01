@@ -38,6 +38,12 @@ pck-tool --file game.pck pipe icon.svg > icon.svg
 # Extract an embedded PCK from a self-contained executable
 pck-tool --file Game.exe extract-pck --output Game.pck
 
+# Pack a folder into a PCK
+pck-tool --folder ./project --file game.pck pack
+
+# Pack and encrypt directory + files with a 64-char hex AES-256 key
+pck-tool --folder ./project --file game.pck pack --encrypt-key <64hex>
+
 # Decrypt with a key (64 hex chars = 32 bytes)
 pck-tool --file game.pck --key <64hex> list
 pck-tool --file game.pck --key <64hex> extract --output ./out
@@ -75,4 +81,3 @@ Original `.import` and `.ctex` files are preserved.
 | Reserved | 64B | Padding to 100 bytes, then align to 16 |
 
 The directory follows at `dir_offset`, containing a file count followed by per-file records (path, offset, size, MD5, flags). Encryption uses AES-256-CFB with a per-entry IV and MD5 integrity check.
-
